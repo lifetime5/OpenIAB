@@ -1,5 +1,7 @@
 #import "AppStoreDelegate.h"
 #import <StoreKit/StoreKit.h>
+#import "NSData+Base64.h"
+#import "JSONKit.h"
 
 // Required by Unity
 extern void UnitySendMessage(const char* objectName, const char* methodName, const char* param);
@@ -192,7 +194,10 @@ NSMutableArray* m_skuMap;
                 
 			case SKPaymentTransactionStatePurchased:
                 [self storePurchase:transaction.payment.productIdentifier];
-                UnitySendMessage(EventHandler, "OnPurchaseSucceeded", strdup([transaction.payment.productIdentifier UTF8String]));
+				if ([self isReceiptOK:transaction.transactionReceipt])
+					UnitySendMessage(EventHandler, "OnPurchaseSucceeded", strdup([transaction.payment.productIdentifier UTF8String]));
+				else
+					UnitySendMessage(EventHandler, "OnPurchaseFailed", strdup([@"Receipt verify failed!" UTF8String]));
                 [[SKPaymentQueue defaultQueue] finishTransaction:transaction];
                 break;
 		}
@@ -212,6 +217,37 @@ NSMutableArray* m_skuMap;
 - (void)paymentQueue:(SKPaymentQueue *)queue updatedDownloads:(NSArray *)downloads
 {
     // TODO: Required by protocol. Consider removal
+}
+
+- (BOOL)isReceiptOK:(NSData *)receipt
+{
+    NSString *buyURL	 = @"https://buy.itunes.apple.com/verifyReceipt";
+    NSString *sandboxURL = @"https://sandbox.itunes.apple.com/verifyReceipt";
+	return [self verifyReceipt:receipt URL:buyURL]||[self verifyReceipt:receipt URL:sandboxURL];
+}
+
+- (BOOL)verifyReceipt:(NSData *)receipt URL:(NSString *)url{
+    NSString *encodingReceipt = [receipt base64EncodedString];
+    NSMutableURLRequest *request = [[[NSMutableURLRequest alloc] init] autorelease];
+    [request setURL:[NSURL URLWithString:url]];
+    [request setHTTPMethod:@"POST"];
+    [request addValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:[NSString stringWithFormat:@"%d", [encodingReceipt length]] forHTTPHeaderField:@"Content-Length"];
+    NSDictionary *body = [NSDictionary dictionaryWithObjectsAndKeys:encodingReceipt, @"receipt-data", nil];
+    [request setHTTPBody:[[body JSONString] dataUsingEncoding:NSASCIIStringEncoding allowLossyConversion:YES]];
+    NSHTTPURLResponse *urlResponse = nil;
+    NSError *error = nil;
+    NSData *receivedData = [NSURLConnection sendSynchronousRequest:request
+                                                 returningResponse:&urlResponse
+                                                             error:&error];
+    NSString *results = [[NSString alloc]initWithBytes:[receivedData bytes] length:[receivedData length] encoding:NSUTF8StringEncoding];
+    NSDictionary *dict = [results objectFromJSONString];
+    if ([[dict objectForKey:@"status"] intValue]==0)
+	{
+        if ([[[NSBundle mainBundle] bundleIdentifier] isEqualToString:(NSString *)[(NSDictionary *)[dict objectForKey:@"receipt"] objectForKey:@"bid"]])
+			return true;
+    }
+    return false;
 }
 
 @end
